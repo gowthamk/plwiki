@@ -1,0 +1,149 @@
+== 1. Introduction ==
+
+Assertion based contracts are a widely used instruments to specify pre and post-conditions for error-free execution of a function. In general, a contract on a function <math>f:t\rightarrow t'</math> specifies following properties
+# Precondition : The set of values (<math>v\in t</math>) that f can be safely invoked on,
+# Postcondition : The set of values (<math>v'\in t'</math>) that f could produce provided that precondition is satisfied, and
+# Blame : Whom to blame when any of the above conditions fail.
+
+Assuming t,t' are basic types, contract over f can be defined as <math>f::(\lambda x:t.{ e }_{ 1 })\mapsto (\lambda z:t'.{ e }_{ 2 })</math>, where <math>{ e }_{ 1 }</math> and <math>{ e }_{ 2 }</math> are predicates over t and t' respectively. Such a contract can be envisioned as following
+
+[[File:contract-figure.jpg]]
+
+As the figure illustrates, contract restricts the set of values that a function can take for safe execution and set of values that function produces in case of safe execution. In case of dependent contracts, set of range values depend on the input value. If contract over f is a dependent contract, then x occurs free in <math>{ e }_{ 2 }</math> but is bound by the scope of <math>{ e }_{ 1 }</math>. An example of a dependent contract for sqrt function that calculates square roots for any float greater than or equal to 1 is given below:
+
+<math>sqrt::(\lambda x:float.x\ge 1)\mapsto (\lambda z:float.(z<x))</math>
+
+In higher order functional setting, contracts can be scaled as higher order contracts which map potentially higher order arguments to potentially higher order results. Monitoring such contracts and assigning blame in such setting is a non-trivial exercise (Findler and Felliesen 02, Blume and McAllester 06 and Flanagan et al. 11).
+
+== 2. Properties and Limitations of conventional contracts ==
+
+A plain contract <math>f::p\mapsto q</math> means the following to the execution context of f
+
+if p then q <br />
+if ~p then error
+
+This implies that a contract entails an implicit assumption on behalf of the caller that the only interesting property that the caller is interested in is the error-free execution of callee. This prevents callee from giving out fine-grained specification about certain interesting aspects of its behaviour. For eg, <br />
+
+ val rec taxing n = if (n<20000) then n else (0.85)*n;;<br />
+  <math>taxing::(\lambda n.n\ge 0)\mapsto (\lambda z.z\ge 0)</math>
+
+  The above contract for taxing correctly describes its behaviour, but fails to capture the fact that the function is an identity for n<20000 and that the result is always less than or equal to n. Such behaviour can be specified using a dependent contract - 
+
+  <math>taxing::(\lambda n.n\ge 0)\overset { d }{ \mapsto  } (\lambda z.(n<20000)?(z==n):(z\ge 0\quad \& \& \quad z\le n))</math>
+
+  A dependent contract is equivalent to specifying the refinement <math>f::p'\mapsto q'</math> along with <math>f::p\mapsto q</math> where <math>p'\Rightarrow p</math> and <math>q'\Rightarrow q</math>.
+
+  Even with the power of refinement and dealing with higher order arguments, there exist certain interesting behaviours of functions that cannot be captured using higher order dependent contracts - 
+  # Temporal properties like function re-entrance cannot be specified using conventional contracts. Researchers have proposed temporal contracts (Disney, Flanagan and McCarthy, 11) to specify and monitor temporal properties of functions. 
+  # Meta properties of a function like how certain patterns in inputs effect the result of the the function cannot be expressed using conventional contracts. For example, consider the following properties of a function f - 
+  ## f is an increasing function.
+  ## For some function g, when g(x1) = g(x2), then f(x1) = f(x2)
+  ## For some functions g and g', when x3 = g(x1,x2), then f(x3) = g'(f(x1),f(x2))
+
+  One imprecise way of capturing, for eg, property 2.2 in dependent contracts is
+
+  <math>f::(\lambda x.true)\mapsto (\lambda z.z==f(g'\left( g\left( x \right) \right)))</math>
+
+  where g' is some functional approximation of non-function <math>g^{ -1 }\left( x \right)</math>. Notice that the above contract uses f while defining the contract for f. Reduction for such contract would become unnecessarily complex. An alternate and more natural way of capturing above mentioned properties in contracts are as following
+  # Property 2.1 : <math>f:?(\lambda { x }_{ 1 }.\lambda { x }_{ 2 }.{ x }_{ 1 }\le { x }_{ 2 })\mapsto (\lambda z_{ 1 }.\lambda z_{ 2 }.z_{ 1 }\le z_{ 2 })</math>
+  # Property 2.2 : <math>f:?(\lambda { x }_{ 1 }.\lambda { x }_{ 2 }.g({ x }_{ 1 })=g({ x }_{ 2 }))\mapsto (\lambda z_{ 1 }.\lambda z_{ 2 }.g(z_{ 1 })=g(z_{ 2 }))</math>
+  # Property 2.3 : <math>f:?(\lambda { x }_{ 1 }.\lambda { x }_{ 2 }.\lambda { x }_{ 3 }.{ x }_{ 3 }=g({ x }_{ 1 },{ x }_{ 2 }))\mapsto (\lambda z_{ 1 }.\lambda z_{ 2 }.\lambda z_{ 3 }.z_{ 3 }=g'(z_{ 1 },z_{ 2 }))</math>
+
+  Notice :? symbol in the contract definitions above. This is used to highlight the fact that above contracts place no obligation on the context, but when the optional precondition is satisfied they place the obligation of satisfying the post-condition on the callee. Much like temporal contracts, these kind of contracts state facts about multiple instances of function f, but concentrate on meta properties rather than temporal properties. For the sake of this discussion, let us call them (stateful) meta contracts. These meta contracts can be stated as a regular dependent contracts (i.e., as :: instead of :?) with the regular notion of blame assignment, but with multi-arity predicates. The discussion on properties and appropriate calculus for such contracts is given in section 4.
+
+  == 3. Practical Implications of Meta Contracts ==
+
+  Meta contracts have a range of practical implications
+
+  === 3.1. Correct blame assigment for asserts === 
+  Consider the following program - 
+
+   val g x1 x2 :: (x1 | true) -> (x2|!=x1) -> (z | true) =
+    val z1 = f(x1) in
+     val z2 = f(x2) in
+      assert(z1!=z2) in
+       1/(z1-z2);;
+
+       where contract for f is given as 
+
+        f::(x|true)->(z|true)
+
+        In the above program, failure of assertion z1!=z2 currently entails no explicit blame assignment (or the trivial blame assignment of blaming g). Given that f's contract does not come with any claims on behaviour of f, it is infact logical to blame g for making the assertion. However, f could be a monotonically increasing arithmetic function on real numbers and since there is no way to state this fact in current infrastructure of contracts, f has to leave it to be implicitly understood by the user. It follows that the the failure of assertion z1!=z2 is infact f's fault and should be blamed on f.
+
+        Meta contracts capture such behaviour of f. A meta contract for f could have been
+
+         f:? (x1 x2 | x1 > x2) -> (z1 z2 | z1 > z2)
+
+         Where it makes it explicit that f is a monotonically increasing function. Now, failure to abide by the contract when context has supplied its due would result in blame being pinned on correct party - f.
+
+         === 3.2. Program Optimizations === 
+         Meta properties state as a part of contracts can be exploited for program optimizations. This is infact the prime motivating factor for this study. Consider the following example - 
+
+          val l1 = get_list in
+           val l2 = rearrange l1 n in
+            val x = find_min l2;
+
+            where meta contracts for rearrange and find_min are specified as following - 
+
+             rearrange:?(lx | true) -> (lz | elts lz = elts lx)
+              find_min:?(lx1 lx2 | elts lx1 == elts lx1) -> (z1 z2 | z1 == z2)
+
+              where elts is a recursively defined measure (Rudich et al, FM08) that is statically guaranteed to terminate. In the above example, since rearrange preserves elts property of input list and find_min only relies on elts property of the input list, it follows that find_min l2 can be replaced with find_min l1 and calls to find_min l1 and rearrange l1 n can be completed concurrently.
+
+              (More such cases should exist in standard code. Need to find them.)
+
+              === 3.3. Increasing the scope for static program verification ===
+              Meta contracts allow programmers to specify meta properties of functions that might be hard (or impossible, owing to decidability limits) for static analyses to infer, thus complimenting them in program verification. For eg:
+
+               f:int->int
+                val f x  = x*x*x+3*x+2 in
+                 val g x1 x2 = 1/(f x1 - f x2) in
+                  g n n+1;;
+
+                  the above program is safe since f(x) is a monotonically increasing function. However, theorem provers may loop on proving properties about non-linear integer arithmetic rendering the program safety undecidable. Specifying following meta contracts would greatly reduce the task of proving program safety statically - 
+
+                   f:?(x1 x2 | x1 > x2) -> (z1 z2 | z1 > z2)
+
+                   (Programs involving non-structural recursion also induce impreciseness in static analysis. Need to find one convincing example where static analysis fails due to imprecision whereas a correct meta contract would state the necessary property)
+
+                   == 4. Syntax and Reduction Rules for Meta contracts ==
+                   === 4.1 Predicate Pushing ===
+                   Recall that in section 3 we have noted that meta contracts can be expressed as regular dependent contracts with multi-arity predicates. We demonstrate how that can be done with help of a example - 
+
+                   Let f:t->t' has a contract that is defined as <br />
+                   <math>f::(\lambda x.{ \rho  }_{ x }x)\overset { d }{ \mapsto  } (\lambda z.{ \rho  }_{ z }z)</math>
+
+                   where <math>{ \rho  }_{ x }</math> and <math>{ \rho  }_{ z }</math> are predicates over t and t' and have types t->bool and t'->bool respectively. 
+
+                   Now, let us define a meta property over f with help of a meta contract on f - 
+
+                   <math>f:?(\lambda { x }_{ 1 }.\lambda { x }_{ 2 }.{ P }_{ x }\quad { x }_{ 1 }\quad { x }_{ 2 })\mapsto (\lambda z_{ 1 }.\lambda z_{ 2 }.{ P }_{ z }\quad { z }_{ 1 }\quad { z }_{ 2 }))</math>
+
+                   The check over x can be "pushed" to right side of the arrow producing a dependent contract - 
+
+                   <math>f:?(\lambda { x }_{ 1 }.\lambda { x }_{ 2 }.true)\overset { d }{ \mapsto  } (\lambda z_{ 1 }.\lambda z_{ 2 }.({ P }_{ x }\quad { x }_{ 1 }\quad { x }_{ 2 })?({ P }_{ z }\quad { z }_{ 1 }\quad { z }_{ 2 }):true)</math>
+
+                   Note that the above meta contract reduces to trivial f::{x | true} -> {z | true} contract if the optional precondition is not met.
+
+                   Now, combining the original contract of f with its meta contract yeilds 
+
+                   <math>f::(\lambda { x }_{ 1 }.\lambda { x }_{ 2 }.({ \rho  }_{ x }\quad { x }_{ 1 })\wedge ({ \rho  }_{ x }\quad { x }_{ 2 }))\overset { d }{ \mapsto  } (\lambda z_{ 1 }.\lambda z_{ 2 }.({ \rho  }_{ z }\quad { z }_{ 1 })\wedge ({ \rho  }_{ z }\quad { z }_{ 2 })\wedge ({ P }_{ x }\quad { x }_{ 1 }\quad { x }_{ 2 })?({ P }_{ z }\quad { z }_{ 1 }\quad { z }_{ 2 }):true)</math>
+
+                   which yields the final contract expression for f.
+
+                   === 4.2 Typing Rules ===
+                   Meta contracts require a simple extension to the typing rule of conventional contracts. Instead of defining contract predicate type as t->bool, we need to define them as t?->bool. To accommodate this, we define a new type <math>\overrightarrow { { \tau  }_{ t } } </math> as
+
+                   <math>\overrightarrow { { \tau  }_{ t } } \quad =\quad t\rightarrow \overrightarrow { { \tau  }_{ t } } \quad |\quad t\rightarrow bool</math>
+
+                   where t = t->t | bool | int 
+
+                   The type rules will now change to include <math>contract \overrightarrow { { \tau  }_{ t } } </math> instead of plain contract t.
+
+                   === 4.2 Reduction Rules ===
+
+                   == Scratchpad ==
+                   Contract Checking 
+
+                   The contract C is checked for conformance at all call sites of f. There exist imprecise static contract checking methods (Like unsound ESC/Java and sound ESC/haskell) which (conservatively) formulate contract checking problem as implications in decidable logic and then check for the validity of implication using a SAT solver. Even in such cases, contracts have
+

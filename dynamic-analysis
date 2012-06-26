@@ -1,0 +1,77 @@
+== Introduction ==
+
+Side-effect analysis has significant implications while reasoning about correctness of program transformations done for several reasons like performance gains. For example, a function that is provably side-effect free can be executed concurrently with its continuation in all settings.
+
+Purity is a related concept. Consider the following definition of a pure function (a method, in context of Java) given by Salcianu and Rinard -
+
+Definition 1 (Salcianu and Rinard Purity) A method is said to be pure if it does not mutate any externally visible heap paths. 
+
+A function which is classified pure by the above definition is essentially side-effect free and can be freely used in assertions and program optimizations. Based on the above definition, a static analysis was constructed which conservatively identifies pure methods in a Java program. However, the analysis is not complete for the following reasons - 
+# By virtue of being a compositional static analysis, it is conservative and identifies only those methods that are pure in all control flow paths possible within the method. There exist a class of methods which are are pronounced impure, but exhibit pure behaviour at run-time as the impurity generating control flow paths are practically infeasible or are rarely taken. For example, FooStack.isFull() (in [[FooStack.java]]) is statically impure, but always exhibits pure behaviour dynamically. However, dynamic purity checkers [2] have found that presence of such methods to be rare among SpecJVM98 and Jolden benchmarks. 
+# Most importantly, definition 1 is too strict for many practical purposes. Analyses built around definition 1 can only differentiate between methods that ever mutate state and methods that don't. The question of whether the mutated state causes any observable difference in execution of the program is an interesting one and has significant practical implications. Let us consider this notion of purity (Note that by taking into account the execution of program we have transcended the boundaries static analysis. Henceforth, the definitions are for dynamic program behaviour i.e., for a given program execution) -
+
+Definition 2 (Observational Purity) A method which mutates the state (hence impure by definition 1), but does not cause any observable differences in program behaviour through state mutations is called an observationally pure method.
+
+The above definition of observational purity is coarse and relative to the program behaviour. Building analysis around such coarse definition is an expensive effort. We can refine the definition to the granularity of individual methods - 
+
+Definition 3 (Relative Observational Purity) A method M is observationally pure with respect to method M' that follows it in program order, if state mutations introduced by M do not alter the semantics of M'.
+
+So far, we have only considered purity of methods with respect to side-effects they produce (i.e., wrt writes to shared state). In that sense, the above definitions of observational purity infact define observational write purity. Dually, we can consider observational read purity - 
+
+Definition 4 (Relative observational read purity) A method M' is observationally read pure with respect to method M that precedes M' in program order, if behaviour of M' does not depend on the state mutations introduced by M.
+
+Is it easy to see that M is write pure relative to M' iff M' is read pure relative to M. Another result that directly follows from Definitions 1 & 2 is
+
+Lemma 1: Method M that is observationally pure with respect to all methods that follow M in the program order satisfies definition 2. However, the converse may not be true.
+
+Going forward, we are consider relative observational purity as standard definition of observational purity. That is, we use Lemma 1 to determine observational purity of a method.
+
+Let us now formalize the notions of observational read and write purity - 
+
+
+The above definitions identify methods that are observationally pure irrespective of any execution of program. That is, they are static definitions of observational purity. Dynamic notion of observational purity has to consider an invocation of method M at a calling context C  - <math>{ M }^{ C }</math>. The corresponding formal definitions are as follows - 
+
+
+Examples - 
+# Under standard implementation, Stack.pop() and Stack.isFull() are observationally pure relative to each other in all executions. This follows from the axiom of linear arithmetic that 
+<math>\models \quad x\quad <\quad y\quad \Rightarrow \quad x-1\quad <\quad y</math>
+# Quicksort partition function and find_min operations operating on same list are observationally pure relative to each other in all executions. This follows the invariant of partition function that set of elements before and after the operation is the same. 
+# Binary tree insert and Binary tree search are observationally pure relative to each other when key being inserted is not the one being searched for. This is because of the invariant that set of keys before the btree_insert is a subset of set of keys before after the btree_insert.
+
+
+== Practical Significance == 
+
+When M and M' are observationally pure relative to each other,
+# Calls to M and M' are commutative - a fact that can be exploited by compiler.
+# The information of inconsequent state mutations is useful in debugging.
+
+It is tempting to think of M and M' as amenable to concurrent execution. However, this might not be the case as invariants valid at method boundaries may not be valid within the method and method execution is not atomic in concurrent setting.
+Examples- 
+# Though quicksort_partition() is commutative wrt find_min(), both can't be executed concurrently as swap operation is not atomic.
+# (As Luke said) Shared state can be updated by M many times before the final inconsequential mutation is done. And intermediate mutations may alter the semantics of M' when it is executed concurrently with M.
+# However, given that key being inserted is not same as the one being searched for, btree_insert() and btree_search() can be executed concurrently. This is because the invariant holds after every atomic operation within btree_insert().
+
+== Monotonical Purity ==
+
+From the previous section, it follows that if invariants of M and M' are ensured to be valid at the boundaries of every context switch during concurrent execution, then M and M' can be executed concurrently without compromising on safety property. The dual problem to consider is that of Deterministic Parallelism. Given that methods M and M' rely on each others invariants for safe execution, the proof that invariants are valid at boundaries of context switch across all possible interleavings of M and M' implies that concurrent execution of M and M' preserves sequential semantics. Alternatively, existence of a counter example is a witness to the contrary. Previous work on Deterministic Parallelism relied on structural disjointness between concurrent executions to prove determinism. By approaching the problem from the perspective of observational purity, we are considering the "semantic disjointness" between concurrent executions, which is a more precise way to establish determinism.
+
+To reason about deterministic parallelism in terms of observational purity, the definition of relative observational purity has to be refined further to the level of atomic operations.
+
+Definition 6 (Prefix of a Method) Let S = S1;S2;S3..Sn be a partially ordered set of atomic statements that constitute M. Then, any linearly ordered chain of atomic statements starting at S1 is a prefix of M.
+
+Definition 7 (Monotonic Purity) A method M is monotonically (write) pure with respect to a method M', if every prefix of M is (write) pure with respect to method M'.
+
+== The Problem == 
+
+The problem we intend to solve can be stated as purity contract checking between methods M and M'. The contract could state that
+ - Methods M and M' are '''pure''' with respect to each other (Definition 3), which implies that calls to M and M' are commutative.
+  - Methods M and M' are '''monotonically pure''' with respect to each other (Definition 7) which implies that calls to M and M' are commutative and can also be executed concurrently.
+
+  The most significant use of such a contract is between a future F and its continuation <math>{ C }^{ F }</math> to ensure safety. If F is monotonically pure relative to <math>{ C }^{ F }</math>, then concurrent execution of F and <math>{ C }^{ F }</math> is effectively free from forward dependencies. Conversely, If <math>{ C }^{ F }</math> is monotonically pure relative to F, then concurrent execution of F and <math>{ C }^{ F }</math> is effectively free from backward dependencies.
+
+  == The Analysis Sketch ==
+
+  Constructing static analysis to purity contract checking problem is theoretically possible. However, such an analysis would turn out to be an over-approximation owing to conservative assumptions and decidability bounds. For example, consider a method M that updates a shared integer y from 0 to any value between N/2 and N and another method M' that does - 
+  if({ y }^{ 3 }-y+N\quad >\quad 0) then do_something() else do_nothing()
+  Now, the purity contract checking between M and M' involves solving non-linear integer arithmetic to extract region splits in domain of Y and checking if 0 and (N/2,N) belong to same region.
+
