@@ -1,0 +1,345 @@
+== 1. Introduction ==
+This article describes current work towards answering the problem  - 
+
+Problem 1 - <math>\quad (a;b\Leftrightarrow a\left\| b \right )</math>?
+
+which asks the question "Given two function calls a and b, can a and b run concurrently while preserving sequential semantics ?". We try to answer the question assuming a functional programming setting without mutable references. We would also consider a related problem -
+
+Problem 2 - <math>P?\vdash (a;b\Leftrightarrow a\left\| b \right )</math>
+
+Which asks the question "Given two function calls a and b, What is the condition P under which a and b cane be run concurrently while preserving sequential semantics?". Problem 1 is a special case of Problem 2 where P=true.
+
+== 2. Trivial Solution ==
+A trivial solution for aforementioned problems is to check if a and b are ordered in program dependence graph (PDG). If PDG does not enforce any dependencies between a and b, then a and b can be run concurrently without altering sequential semantics. This trivial solution is sound, but incomplete. In this discussion, we consider the tougher instance of the problem where a and b are ordered in PDG. A simple example of such a case is given below - 
+
+  fun double x = x+x
+  fun isNonZero x = ~(x=0)
+  fun calc x =
+  let
+   val denom = double x
+  in
+   if(isNonZero denom) then 1/denom else 0
+  end
+
+In the above example, the argument to function call isNonZero can be replaced with x and calls to double and isNonZero can be executed concurrently. This example is clearly contrived, but examples of such behaviour exist in standard library functions - 
+
+AVL and Red-Black Tree rotations are semantically disjoint wrt get_min, get_max and tree_lookup
+quicksort and list_reverse  are semantically disjoint wrt prefix_sum and find_min over lists
+map function on lists is semantically disjoint wrt list_length
+tree_insert n and tree_lookup k are semantically disjoint when (n != k)
+add n and retieve k on hashtable are semantically disjoint when (n != k)
+
+== 3. A Sound Approach ==
+The common characteristic among examples described in previous section is that the 
+
+# Function f has type <math>T1 \rightarrow \alpha \rightarrow T2</math> and function g has type <math>T \rightarrow \beta \rightarrow \gamma</math> where <math>T1 <: T and T2 <: T</math>, and
+# Function f preserves the property of its input that determines the output of g. 
+
+For example, AVL Tree rotation does not change the minimum element in the tree. tree_insert does not alter the presence or absence of any value other than the newly inserted key. If we can determine that f preserves a property P of its input and g relies only on the property P to produce the output, we can safely assert that f;g <=> f||g. However, such properties are too fine grained and therefore cannot be determined by a generalized procedure. We therefore look for more general (hence, stronger) properties that imply a variety of such fine-grained properties. Three such properties are given below -
+# Elements (elts) - The set of elements
+# Structure (struc) - The pattern of constructor applications
+# Relative Ordering (inv) - The relative ordering of constituent values (Which is same as the datastructure invariant)
+AVL Tree, RB Tree rotations, quicksort etc preserve the elts property of their input whereas find_min, prefix_sum, in-order-traversal etc yield same result on two inputs that have same elts.
+Map function preserves the structure property of its input and list_length only depends on the structure property.
+Inv property is different for different datastructures. Almost all datastructure operations (like btree_insert, heap_insert etc) preserve the invariant, but there are no realistic functions that yeild same result on two Binary Seach Trees or two sorted lists except those that check the invariant itself.
+
+Since elts, struc and datastructure invariants (like BST, Balanced, Acyclic etc) are properties over recursive structures, they can be defined using recursive functions which are structurally guaranteed to terminate. We are interested in knowing 
+# Which functions preserve such properties, and
+# Which functions depend only on such properties.
+
+The first problem can expressed as a dependent contract inference (or as a dependent type inference) problem. Given that definitions of elts, struc and invariants (like BST etc) are avaliable along with definition of qualifiers, rondon et al.'s method solves the problem of determining property preservation.
+The second problem of property dependence cannot be expressed using regular contracts or dependent types. We have developed [[Meta_Contracts]] to express and check property dependence predicates. Solving second problem entails inferring meta-contracts for functions which requires proving or disproving properties of the form
+
+<math>\forall \quad x1,x2\in T,\quad elts\quad x1=elts\quad x2\quad \Rightarrow \quad g\quad x1=g\quad x2</math>
+
+for all potential candidates of g (functions with type <math>T \rightarrow \beta \rightarrow \gamma </math> as described above). 
+
+Considerable effort has been spent on developing a generic procedure that uses induction to discharge such proofs, but without any success so far.
+
+== 4. Approaches towards Unsound Solution ==
+Let f and g be two functions with types as described above (i.e., they are candidates on which we make the assertion in problem 1).
+
+Now, consider the transformation of 
+
+  let
+   z1 = f x1
+  in
+   g z1
+  end
+
+into 
+
+  let
+   val z1 = g x1
+   val z2 = f x1
+   val z3 = g z2
+  in
+    if(z1=z3) then z1 else raise "Counter Example"
+  end
+
+The two code snippets are semantically equivalent if and only if (f;g <=> f || g) is valid. If the transformed code raises exception, then x1 serves as a counter example for the assertion that we made. Profile based solutions exploit this fact to produce a counter example to invalidate the assertion. We try to generate test cases that reach the false branch of if condition in transformed code. If we succeed, then the assertion is invalidated. Otherwise, we give up after limited number of attempts or time. If assertion couldn't be invalidated, we assume that f and g could be run concurrently. This approach could give rise to false positives are possible manual intervention is needed in the last step to filter them out. 
+
+Profile based solutions differ in the strategy of generating test cases to invalidate assertion. The goal is to find a feasible path in transformed program that leads to the "Counter Example" exception in minimum time. Let us consider few such strategies - 
+
+=== 3.1 Random Testing ===
+QuickCheck is a tool that generates random inputs to test assertions on Haskell programs. Consider the following haskell code snippet that tests the assertion that findmin can be run in parallel with qsort using quickcheck.
+
+ <nowiki>
+qsort :: Ord a => [a] -> [a]
+qsort []     = []
+qsort (x:xs) = qsort lhs ++ [x] ++ qsort rhs
+    where lhs = filter  (< x) xs
+          rhs = filter (>= x) xs
+
+findmin :: Ord a => [a] -> a
+findmin [] = error "Nil"
+findmin [x] = x
+findmin (h:t) = if(h < fmt) then h else fmt
+    where fmt = findmin t
+
+prop_sort_preserves_elts :: [Integer] -> Property
+prop_sort_preserves_elts xs = (xs /= []) ==> findmin (qsort xs) == findmin xs
+main = quickCheck prop_sort_preserves_elts
+  </nowiki>
+
+QuickCheck generates 100 tests cases (a configurable number), all of which pass confirming the assertion.  Now consider the modified version of qsort function - 
+
+ <nowiki>
+qsort []     = []
+qsort (x:xs) = qsort lhs ++ [y] ++ qsort rhs
+    where lhs = filter  (< x) xs
+          rhs = filter (>= x) xs
+            y = if(x==23564) then 0 else x
+ </nowiki> 
+Clearly, the assertion is invalid for this version of quicksort. However, QuickCheck couldn't generate a counterexample. The above version of quicksort is clearly contrived, but if we replace quicksort with eliminate_duplicates and findmin with prefix_sum, quickcheck still couldn't invalidate the assertion in first 19 of the 20 experimental runs.
+
+Consider the following implementation of Binary Search Tree in Haskell along with the assertion that findmin can be run concurrently with create_new_max - 
+
+ <nowiki>
+data Btree = Empty | Node (Btree) Int (Btree) deriving (Show,Eq)
+
+instance  Arbitrary Btree where
+    arbitrary = oneof [return Empty, liftM3 Node arbitrary arbitrary arbitrary]
+
+btree_insert Empty n = Node Empty n Empty
+btree_insert (Node l x r) n = if(n<x) then (Node (btree_insert l n) x r) else (Node l x (btree_insert r n))
+
+get_max (Node _ x Empty) = x
+get_max (Node _ x r) = get_max r
+get_max Empty = 0
+
+create_new_max b = case b of
+                    Empty        -> Empty
+                    (Node l x r) -> btree_insert b max
+    where max = (get_max b) + 1
+
+findmin b = case b of
+    (Node Empty x _) -> x
+    (Node l x _) -> findmin l
+    Empty   -> 0
+
+prop_btree_fm :: Btree -> Property
+prop_btree_fm b = (b /= Empty) ==> findmin b == findmin (create_new_max b)
+main = quickCheck prop_btree_fm
+  </nowiki>
+
+Since QuickCheck cannot automatically generate instances of user-defined types, we have the following code -
+ 
+ <nowiki>
+instance  Arbitrary Btree where
+    arbitrary = oneof [return Empty, liftM3 Node arbitrary arbitrary arbitrary]
+ </nowiki>
+
+For this example, QuickCheck generates a test case that fails the assertion, but the generated instance of Btree type does not satisfy BST property. This is expected since QuickCheck has no knowledge of the data structure invariant. There are two ways to circumvent this - 
+# In the definition of prop_btree_fm, filter out the Btrees that don't satisfy BST. - The result is that too few randomly generated Btees actually pass the check.
+# Write a new function fromList of type [Int]->Btree that repeatedly calls btree_insert with list elements. Then invoke quickcheck to generate random lists - This approach works. However, the annotation required is almost twice as much as the normal code.
+
+Clearly, plain random testing is ineffective in finding counter examples due to the following reasons - 
+# Probability of generating a single value that could lead to error is very low, &
+# Heavy annotation burden
+
+=== 3.2 Directed Random Testing ===
+Symbolic execution based directed random testing strategy is an improvement over plain random testing. For the lack of symbolic execution frameworks in functional setting, we experiment with imperative code that emulates functional behaviour on KLEE framework.  Consider following code that emulates list_eliminate_duplicates and prefix_sum. The code makes the assertion that sum of elements in the list before and after duplicate elimination is the same, which is clearly invalid.
+
+EXAMPLE-1
+ 
+ <nowiki>
+int remove_elem(int *arr,int size,int n)
+{
+    if(size==0)
+        return 0;
+    int s = remove_elem(arr+1,size-1,n);
+    if(*arr==n){
+        unsigned i;
+        for(i=0;i<s;i++)
+            arr[i]=arr[i+1];
+        arr[i+1]=0;
+        return s;
+    }
+    else
+        return s+1;
+}
+int elim(int *arr,int size)
+{
+    if(size==0)
+        return 0;
+    int s = elim(arr+1,size-1);
+    return 1+remove_elem(arr+1,s,*arr);
+}
+int sum(int *arr,int size)
+{
+    if(size==0)
+        return 0;
+    else return *arr + sum(arr+1,size-1);
+}
+int main()
+{
+    int size=20,arr[100];
+    size = klee_range(1,100, "size");
+    for(unsigned i=0;i<size;i++)
+        arr[i]=rand()%1000;
+    klee_make_symbolic(&arr, sizeof(arr), "arr");
+    int sum1 = sum(arr,size);
+    int s = elim(arr,size);
+    int sum2 = sum(arr,s);
+    klee_assert(sum1==sum2);
+    return 0;
+}
+ </nowiki>
+
+Klee finds a counter example to falsify the assert statement after 4 iterations. Now consider the following reconstruction of functional list reverse. The code makes the assertion that sum of list and reversed list is the same, which should be true except that the behaviour of reverse has been modified to introduce a new value for lists of length 30 and above. So the assertion is invalid.
+
+EXAMPLE-2
+
+ <nowiki>
+int *revl(int *base,int *arr,int size)
+{
+    if(size==0)
+        return base+1;
+    else if(size==30)
+        *base = 20;
+    else
+        *base = *arr;
+    base--; arr++; size--;
+    return revl(base,arr,size);
+}
+int *rev(int *arr,int size)
+{
+    int *tmp = (int *)calloc(size,sizeof(int));
+    int *base = tmp+size-1;
+    return revl(base,arr,size);
+}
+int sum(int *arr,int size)
+{
+    if(size==0)
+        return 0;
+    else return *arr + sum(arr+1,size-1);
+}
+int main()
+{
+    int size=20,arr[100];
+    size = klee_range(1,100, "size");
+    for(unsigned i=0;i<size;i++)
+        arr[i]=rand()%1000;
+     klee_make_symbolic(arr, sizeof(arr), "arr");
+    int sum1 = sum(arr,size);
+    int *r = rev(arr,size);
+    int sum2 = sum(r,size);
+    klee_assert(sum1==sum2);
+    return 0;
+}
+ </nowiki>
+Klee invalidates the assertion after 30 iterations and running time of 1 minute. 
+
+Now consider another example where sum in the above case is replaced by findmin function that is defined as following - 
+
+EXAMPLE-3
+
+ <nowiki>
+int findmin(int *arr,int size)
+{
+    if(size==1)
+        return *arr;
+    int fmt = findmin(arr+1,size-1);
+    return (fmt<*arr)?fmt:*arr;
+}
+ </nowiki>
+
+We make the same assertion again, but this time KLEE loops (could not find a counter-example after running for 5 minutes).
+
+Now consider another modified form of example-2 where we use sentinel (-1) terminated integer arrays and a len function to calculate the size. This is to replicate the exact behaviour of lists in functional programming. The code snippet is given below - 
+
+EXAMPLE-4
+
+ <nowiki>
+int len(int *arr)
+{
+    if(*arr==-1)
+        return 0;
+    else return 1+len(arr+1);
+}
+int *revl(int *base,int *arr)
+{
+    int size = len(arr);
+    if(size==0)
+        return base+1;
+    else if(size==30)
+        *base = 20;
+    else
+        *base = *arr;
+    base--; arr++; size--;
+    return revl(base,arr);
+}
+int *rev(int *arr)
+{
+    int size = len(arr);
+    int *tmp = (int *)calloc(size,sizeof(int));
+    int *base = tmp+size-1;
+    return revl(base,arr);
+}
+int sum(int *arr)
+{
+    if(*arr==-1)
+        return 0;
+    else return *arr + sum(arr+1);
+}
+int main()
+{
+    int size=20,arr[100];
+    size = klee_range(1,100, "size");
+    klee_make_symbolic(arr, sizeof(arr), "arr");
+    for(unsigned i=0;i<size;i++)
+        if(arr[i]==-1) arr[i]=rand()%1000;
+    arr[size]=-1;
+    int sum1 = sum(arr);
+    int *r = rev(arr);
+    int sum2 = sum(r);
+    klee_assert(sum1==sum2);
+    return 0;
+}
+ </nowiki>
+
+For this example as well, klee could not find a counter example after executing for 5 minutes. Infact, it couldn't even complete 1 iteration.
+
+Results from above experiments can be explained as following
+
+# Example-1 - Directed random testing is certainly more effective than random testing in disproving assertions based on occurance of a value in input
+# In Example-2 Klee disproves assertion, however takes 30 iterations and 1 minute. This can be attributed to exploring branches that unroll recursive calls and don't lead to uncovered code. Hypothesis - This can be improved by using a state search algorithm that selects states that quickly lead to uncovered code (Implementation of such a searcher exists in klee and is used along with other searchers in round robin way).
+# Klee loops on Example-3. The ineffectiveness here is a result of spending more time exploring different branches in first call of findmin (occurs high up in state tree) at the cost of branches in revl. Hypothesis - Using coverage-optimized state searcher that alternatively explores branches in f and g should be more efficient.
+# Example-4 is also interesting as one of the key branch conditions in revl indirectly rely on the depth of recursion. Klee could not find inputs that satisfy the branch condition and hence could not generate the counter example. This case of branching on depth of structural recursion is particularly common in functional environment. Loop invariants might help in generating satisfying assignments. Solution is being worked on.
+
+
+== 5. ToDo ==
+
+The primary goal of a symbolic execution based test generation framework is to cover as many unique paths as possible whereas the goal in our case is to invalidate an assertion. [Ma, Phang, Foster & Hicks, Directed symbolic execution, SAS2011] also shares a similar goal. The paper presents a backward call-graph traversal based state selection algorithm that is more effective than klee in finding paths that lead to assertion failures. It is not yet know how effective it would be on assertions form (f(x) = f(g(x))) and in functional programs with branches over depth of structural recursion.
+
+Following things have to be done - 
+# Replace the searcher in klee with only coverage-optimized searcher and see the results
+# Study Ma et al.,'s algorithm in greater detail - determine how effective it would be to our case
+# Write an algorithm that uses coverage-optimized searcher while alternatively unrolling paths in f and g - Result should be to find counter example testcase for example-3 within 30 iterations.
+
+If point-3 above yields desirable results, then following things have to be done to answer problem-1 
+# Implement a filter to isolate functions of with the type signatures same as f and g (as described above) from ml libraries (*.sig, *.mli files).
+# Implement the searcher algorithm on symbolic execution frameworks for functional programs . However, no such publicly available framework exists. If we have to construct one, we need a method to 1. Translate constraints over user-defined types to constraints over basic types in solver and 2. Deal with constraints over higher order arguments. [Godefroid, Higher Order Test Generation, PLDI2011] could be a starting point.
+# Run the framework over candidates generated in step-1 to invalidate assertions.
+
