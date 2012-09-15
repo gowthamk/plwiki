@@ -1,0 +1,185 @@
+== 1. Introduction ==
+This article is centered around following topics - 
+# Inference of 'preserves' part of meta-contract, and
+# Solutions to the questions raised in section 5 of [[Meta Contract Language]] article.
+
+== 2. Partial Inference ==
+As discussed in section 4 of the previous article, the sub-typing relation between qualifiers of 'preserves' and 'decided-by' constructs of meta contracts is sufficient to establish the validity of transformation <math>f;g\quad { \longleftrightarrow  }_{ s }f\parallel g</math>. So far, we require library writers to write both parts of the meta-contract explicitly. However, by inferring the preserves part of the contract in a goal directed way we can reduce the annotation burden on the library developer. This section describes solution for the inference problem.
+
+=== 2.1 The Inference Problem ===
+Let a function <math>g:T1\rightarrow \beta \rightarrow T2</math> from library L declare a meta-contract that g is decided-by <math>{ \rho  }_{ 2 }P</math> where <math>{ \rho  }_{ 2 }</math> is a filter and <math>P</math> is a property as defined in previous article. The inference problem involves finding a function <math>f:T1\rightarrow \alpha \rightarrow T1</math> from L and a weakest predicate <math>\phi </math> such that <math>f</math> preserves <math>{ \rho  }_{ 1 }P</math> and <math>\phi \vdash { \rho  }_{ 2 }\Rightarrow { \rho  }_{ 1 }</math> is valid.
+
+We will describe the solution to the inference problem in two steps. In first step, we will tackle the question of finding function <math>f:T1\rightarrow \alpha \rightarrow T1</math> that preserves <math>{ \rho  }_{ 1 }P</math> such that <math>{ \rho  }_{ 1 }\neq false</math>. In second step, we use a list of abducible formulas to generate a <math>\phi </math> such that <math>\phi \neq false</math> and <math>\phi \vdash { \rho  }_{ 2 }\Rightarrow { \rho  }_{ 1 }</math> is valid
+
+=== 2.2 Step 1 - Inferring Preservation ===
+For every <math>g:T1\rightarrow \beta \rightarrow T2</math> that declares a "decided-by <math>{ \rho  }_{ 2 }P</math>" meta contract, we start with a candidate set (F) of functions in library L with type <math>f:T1\rightarrow \alpha \rightarrow T1</math> and infer filter(<math>{ \rho  }_{ 1 }</math>) for preservation of property P in <math>f</math>. 
+
+==== 2.2.1 Value Preservation ====
+Case when P=value. Let us assume that we have 2 procedures - <math>WP(f,\rho ,\alpha)</math> and <math>SP(f,\rho ,\alpha)</math> that construct weakest precondition (respectively, strongest postcondition) for a function <math>f</math> under abstraction function <math>\alpha</math> given a state satisfying postcondition (respectively, precondition) <math>\rho</math>. The abstraction function <math>\alpha</math> takes current state <math>Q</math> and generates strongest conjunction of predicates (<math>b</math>) from set <math>S*</math> such that <math>Q \Rightarrow b</math>. The following procedure computes filter <math>\rho</math> for value preservation of f. 
+
+  computeFilter(f) {
+    let f:{x:T1}->alpha->{z:T1};
+    ret = true;
+    foreach(b in S*) {
+      post = SP(f,ret <math>\wedge </math> b,<math>\alpha</math>);
+      pre = WP(f,ret <math>\wedge </math> b,<math>\alpha</math>);
+      if(<math>\left[ \upsilon /z \right] post\Rightarrow \left[ \upsilon /x \right] (ret\wedge b)</math> &&
+         <math>\left[ \upsilon /z \right] (ret\wedge b)\Rightarrow \left[ \upsilon /x \right] pre</math>) {
+        ret = ret <math>\wedge </math> b;
+      }
+    }
+    if(ret==true)
+      return false;
+    else
+      return ret;
+  }
+
+==== 2.2.2 Elts Preservation ====
+Some examples - 
+
+ datatype 'a tree = Empty | Node of 'a tree * 'a * 'a tree;
+
+ fun insert n Empty = Node (Empty,n,Empty)
+  | insert n (Node (lt,n',rt)) = if (n'>n) then (Node ((insert n lt),n',rt)) else (Node (lt,n',(insert n rt)));
+
+ fun present n Empty = false
+  | present n (Node (lt,n',rt)) = if (n=n') then true else
+                                    if (n<n') then present n lt
+                                    else present n rt;
+
+ fun remove n Empty = Empty
+  | remove n (Node (Empty,n',rt) as t) = if(n=n') then rt else if(n>n') then (remove n rt) else t
+  | remove n (Node (lt,n',Empty) as t) = if(n=n') then lt else if(n<n') then (remove n lt) else t
+  | remove n (Node (lt,n',rt)) = let
+                                    val x = max lt
+                                 in
+                                    if(n<n') then (Node ((remove n lt),n',rt)) else if (n>n')then (Node (lt,n',(remove n rt)))
+                                    else if(n=n') then (Node ((remove_max lt),x,rt))
+                                 end
+
+ fun range_filter n1 n2 Empty = Empty
+  | range_filter n1 n2 (Node (lt, n, rt) as t) = if(n1<=n && n<=n2) then
+                                                  remove n (Node ((range_filter n1 n2 lt),n,(range_filter n2 n2 rt))
+                                                 else t
+
+ fun preserve_range n1 n2 [] = []
+ | preserve_range n1 n2 h::t =  let
+                                   val t' = preserve_range n1 n2 t
+                                 in
+                                   if(h>=n1 and h<=n2) then h::t' else 0::t'
+                                 end
+
+ datatype ('a,'b) map = NILMAP | Map of ('a * 'b) * ('a,'b) map;
+
+ fun replace_val (k1,v1) NILMAP = NILMAP
+  | replace_val (k1,v1) (Map ((k,v),m)) = let
+                                            val v' = if(k=k1) then v1 else v;
+                                            val m' = if(k=k1) then m else replace_val (k1,v1) m
+                                          in
+                                            Map ((k,v'),m')
+                                          end
+
+== 3. Discussion ==
+Consider the following questions - 
+=== 3.1 Why elts? ===
+Why do we need elts notation? Why can't we deal with homomorphisms? <br /> eg: For function insert which takes T1 and returns T2, can't we express elts preservation as dependent type where T2 = A(T1) where A is a homomorphism? <br /> Since A is a homomorphism over any algebraic datatype, it has to be defined in terms of operations on the datatype itself (insert, in this case). This kind of definition isn't much useful. <br /> Instead, we define a functor elts that maps any algebraic datatype to set datatype and then define operations on set datatype. <br/> Eg: for insert : {k:int}->{T1:int tree}->{T2:int tree}, let us define
+<math>P\quad =\quad \lambda x.x\neq k</math>
+Then, we could define the dependent type of insert as 
+ insert : {k:int|true}->{T1:int tree|true} -> {T2:int tree| filter((elts T1),P)=filter((elts T2),P)}
+where set equality is defined in usual way.
+
+=== 3.2 What is (filter) P? ===
+Where does P from the above section fit in the scheme of things?<br />
+Let us consider the function lookup with type {r:int} -> {T3:int tree| true} -> {z:bool}. The contract for lookup is 
+ lookup decided-by (=r) elts of T3.
+What it essentially means is that 
+<math>\forall T1,T2:int\quad tree,\quad \forall r:int,\quad filter(elts(T1),\lambda x.x=r)=filter(elts(T1),\lambda x.x=r)\quad \Rightarrow \quad lookup(r,T1)=lookup(r,T1)</math>
+
+That is result of lookup depends on constituents of T3 that are equal to r. Since we are speculating that lookup can be run in parallel with insert, we would ideally like insert to preserve (=r) elts in its formal argument T1. That is, we would like insert to have type
+ insert : {k:int|true}->{T1:int tree|true} -> {T2:int tree| filter((elts T1),(<math>\lambda x.x=r</math>))=filter((elts T2),(<math>\lambda x.x=r</math>))}</math>
+
+But this type isn't well-defined as r is not in scope when insert is being defined. One solution is to introduce the existential and then skolemize the type of insert as
+ <math>\exists</math> s:int such that insert : {k:int|true}->{T1:int tree|true} -> {T2:int tree| filter((elts T1),(<math>\lambda x.x=s</math>))=filter((elts T2),(<math>\lambda x.x=s</math>))}
+Which skolemizes to,
+ insert : {s:int|true} -> {k:int|true}->{T1:int tree|true} -> {T2:int tree| filter((elts T1),(<math>\lambda x.x=f(k)</math>))=filter((elts T2),(<math>\lambda x.x=f(k)</math>)}</math>
+s=f(k) since k is the only variable of type int in scope.
+Now, the implication <math>\phi \vdash (x=r)\Rightarrow (x=f(k))</math> is valid when <math>\phi</math> is <math>r=f(k)</math>.
+
+But, as we can observe from the definition of insert, there exists no definition for f for which the preservation property holds. However, the consequent of implication that we are trying to prove is only one of the many possibilities that make the implication valid. Consider the following possibilities - 
+# <math>(r>f(k))\vdash (x=r)\Rightarrow (x>f(k))</math>
+# <math>(r<f(k))\vdash (x=r)\Rightarrow (x<f(k))</math>
+# <math>(r\neq f(k))\vdash (x=r)\Rightarrow (x\neq f(k))</math>
+# ...
+Out of the possible consequents, if there exists one such predicate for which f is well-defined and preservation property for insert holds, we have found a condition under which insert and lookup can be run concurrently.
+
+It turns out that when f(k)=k, insert has type
+ insert : {k:int|true}->{T1:int tree|true} -> {T2:int tree| filter((elts T1),(<math>\lambda x.x\neq k</math>))=filter((elts T2),(<math>\lambda x.x\neq k</math>)}<br />
+and the implication<br />
+<math>(r\neq k)\vdash (x=r)\Rightarrow (x\neq f(k))</math><br />
+holds. So, insert and lookup can be executed concurrently under the condition <math>r\neq k</math>. The consequent(<math>x\neq f(k)</math>) of the above implication is what we call as filter (P). We say insert preserves {P} elts.
+
+=== 3.3 How do we infer P? ===
+Given the definition of insert, lookup and contract for lookup (lets say, lookup is decided-by {P2} elts), how do we infer P such that 
+# Insert preserves {P} elts, and
+# The implication <math>\phi \vdash P2\Rightarrow P</math> is valid.
+
+For a given P2, there are only limited number of possibilities for shape of P, but f(k) can be any valid formula in linear arithmetic and uninterpreted functions. By utilizing the knowledge of P2, we can make the inference procedure for P goal-directed. However, let us first discuss a method that would return weakest P satisfying criterion-1 above. Then we can check that for implication in 2 to be valid, should <math>\phi</math> be necessarily false? If not, then we have found weakest <math>\phi</math>. (weakest since the consequent of implication is weakest)
+
+Before we discuss the inference procedure, let us discuss the intuition behind it. Let us consider insert function where S1 and S2 denote (elts T1) and (elts T2) respectively. P is the predicate such that
+
+<math>\forall x\in (elts\quad T1),\quad P(x)\Rightarrow x\in (elts\quad T2)</math>, and
+<math>\forall x\in (elts\quad T2),\quad P(x)\Rightarrow x\in (elts\quad T1)</math>
+
+or conversely,
+
+<math>\forall x\in (elts\quad T1),\quad x\notin (elts\quad T2)\Rightarrow (\neg P(x))</math>, and
+<math>\forall x\in (elts\quad T2),\quad x\notin (elts\quad T1)\Rightarrow (\neg P(x))</math>
+
+The above formula translates as - If an element x is found such that it does not belong to one of S1 or S2, then P(x) is false.
+Lets assume we have x1<math>\in</math>S1 (obtained from match site) and x2<math>\in</math>S2 (obtained at construction site). At every construction site (c), we aim to prove that x1<math>\in</math>S2 and x2<math>\in</math>S1 so that we have trivial value for P as true. 
+# If both conditions could be proved, then we are done. P is true.
+# If condition-1 is invalid (x1<math>\notin</math>S2) - Then  let q be the guard of c and let <math>{ p }_{ x1 }</math> denote set of states of x1 such that <math>q\Rightarrow { p }_{ x1 }</math> is valid. Which means <math>\neg { p }_{ x1 }</math> is really the P that we are looking for. Considering the converse, we have <br /> <math>\neg { p }_{ x1 }\Rightarrow \neg q</math> <br /><math>\Leftrightarrow </math> <math>P \Rightarrow \neg q</math> <br /><br />It follows that P is weakest precondition of <math>\neg q</math> with respect to x1 (<math>{ WP }_{ x1 }(\neg q)</math>).
+# If condition-2 is invalid (x2<math>\notin</math>S1) - Then replace c with let v=x2 in [v/x2]c. Find the strongest post-condition of v=x2 starting from true state (lets call it q(v)). We know that q(x2) is valid at c. It follows that <math>P=\neg q(x2)</math> such that ~P is valid at c.
+# If both conditions are invalid - Then let P1 and P2 be filters inferred using methods in 2 and 3 respectively. Then <math>P=P1\wedge P2</math>
+
+Let us run this procedure over insert and see how P can be inferred. The following is the definition of insert
+ fun insert n Empty = Node (Empty,n,Empty)
+ | insert n (Node (lt,n',rt)) = if (n'>n) then (Node ((insert n lt),n',rt)) else (Node (lt,n',(insert n rt)));
+
+Case 1 (Base case. T1=Empty) T2=Node (Empty,n,Empty). S1=elts(T1)={}. S2=elts(T2)={n} At the construction site,
+# {}<math>\neq</math>{n} So P can't take the trivial value of true.
+# Condition-1 is valid since <math>\forall x\in S1,\quad x\in S2</math>. (vacuous proof) So P1 = True
+# Condition-2 is invalid since <math>n \notin S1</math>.So,  SP(v=n,true) = {v=n} (call it q). Now, P2 = ~q = {v<math>\neq</math>n}.
+By the end of Case 1, we know that insert preserves {<math>\neq</math>n} elts. We now proceed to case-2 to strengthen the filter.
+
+Case 2 (Recursive case. T1=Node(lt,n',rt)) There are two construction sites (Call them c1 and c2). At both c1 and c2, there are  recursive calls to insert. Since we already know that insert preserves {<math>\neq</math>n} elts, we instantiate the formal n with actual n and replace elts(insert n t) with Filter(elts t,(<math>\lambda x.x\neq n</math>)) or simply {<math>\neq</math>n}elts(t). We then lift the filter from recursive call to the construction site and propagate it to the match site via weakest precondition analysis. 
+The weakest precondition analysis from c1 and c2 computes condition at match site as <math>(n<n'\Rightarrow \upsilon \neq n)\wedge (n\ge n'\Rightarrow \upsilon \neq n)</math> which is <math>\Leftrightarrow \upsilon \neq n</math>.
+
+Hence, insert preserves {<math>\neq</math>n} elts in T1.
+
+=== 3.4 Limitations ===
+Consider the remove function -
+ fun remove n Empty = Empty
+ | remove n (Node (Empty,n',rt) as t) = if(n=n') then rt else if(n>n') then (remove n rt) else t
+ | remove n (Node (lt,n',Empty) as t) = if(n=n') then lt else if(n<n') then (remove n lt) else t
+ | remove n (Node (lt,n',rt)) = let
+                                   val x = max lt
+                                in
+                                   if(n<n') then (Node ((remove n lt),n',rt)) else if (n>n')then (Node (lt,n',(remove n rt)))
+                                   else if(n=n') then (Node ((remove_max lt),x,rt))
+                                end
+The inference fails to infer correct filter for remove as it cannot detect that x<math>\in</math>elts(lt) and remove_max preserves {<math>\neq</math>x} elts in lt. This is due to following facts - 
+# Lack of powerful typing/contract structure to express the fact that max:{t:int tree|x<math>\in</math>elts(t)}->{int|<math>\upsilon \ge x</math>}. 
+# Inference procedure needs to know that the argument to remove_max satisfies BST invariant to infer appropriate preservation property for remove_max.
+
+Consider another function - 
+ fun nop [] = []
+ | nop (h::t as l) = (hd l)::t
+
+Here too we fail to infer that fun preserves elts for similar reasons as above.
+
+Consider a concocted function - 
+ fun nondet_insert n Empty = Node (Empty,n,Empty)
+ | nondet_insert n (Node (lt,n',rt)) = if (n'>n) then (Node ((insert n-1 lt),n',rt)) else (Node (lt,n',(insert n+1 rt)));
+Here, we need a loop invariant or conservatively declare that the function does not preserve elts.
+
