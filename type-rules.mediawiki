@@ -1,0 +1,320 @@
+== 1. Introduction ==
+We define a type system that consists of following new artifacts -
+# Types that 
+## Are indexed by a specific instance (<math>a</math>) of a datatype (<math>\delta</math>), and
+## Define values that make up the datatype through a specific constructor (<math>C</math>) of that type.
+# Dependent type refinements that 
+## Allow restricted existential quantification only over (instantiated) types from 1, and
+## Not only introduce new types (via instantiation of indexed type in 1.1), but also claim subtype relations between existing types and the new type which can be decided using a combination of type-checking rules and implications over EUFA logic.
+
+== 2. Motivation ==
+=== 2.1 Problem with Elts ===
+Consider a list manipulating function (<math>f:l1->l2</math>) that takes a list and returns a new list. We are interested in specifying and verifying if all elements in l1 are preserved in l2. A straightforward way of specifying such a property is by first defining a mapping ''elts'' from <math>\alpha list</math> to <math>\alpha set</math> and then reasoning over sets - 
+
+ f: {l1 : intlist} -> {l2 : intlist | elts(l2) = elts(l1)}
+
+However, this approach doesn't generalize. First of all, it needs us to define ''elts'' mapping for every datastructure over which reasoning of membership is needed. Secondly, for every additional assertion that we make over sets in refinement, type checker has to be enriched with logic to handle relations in those assertions (eg: union, subset, set difference etc) and convert them into (expensive) calls to solver with theory of sets. Thirdly, and most importantly, many interesting properties can't be expressed in this notation. For eg, consider the max function that returns maximum element in a list. At its expressive best, the above notation lets us specify type of max as
+
+ max : {l1 : intlist} -> {z:int | {z} <math>\subseteq</math> elts(l1)}
+
+We cannot assert that every element in elts(l1) is less than or equal to z while specifying dependent type for max. This limitation is a direct result of inability to reason about the relation between z and elements in the list. This can be overcome if we define our types and type relations in a different and effective way.
+
+=== 2.2 Indexed Membership Types ===
+Consider the following type indexed on intlists - <br />
+<math>\Pi (a:intlist).\{ \upsilon :int | \upsilon \epsilon a \} </math> <br />
+The above definition takes an intlist and defines a type that asserts that certain integer is in that list. The symbol <math>\epsilon</math> intuitively means "belongs to". However, it has not semantics attached to it and should be viewed merely as a placeholder for relation that relates <math>\upsilon</math> to <math>a</math>. Now, lets create two abbreviations to the above defined type  - <math>{ T }_{ cons }</math> and <math>{ T }_{ nil }</math>. these abbreviations let us instantiate the above defined indexed type using arbitrary intlists - the only way in which they are used in the program. Such instantiations are denoted as <math>{ T }_{ cons }[l]</math> or <math>{ T }_{ nil }[l]</math> for a list l. 
+
+The only way to create elements of <math>{ T }_{ cons }[l]</math> or <math>{ T }_{ nil }[l]</math> is by using the constructors of list, whose types are given below - 
+
+ datatype intlist = nil | cons of {x:int}*{xs:intlist} -> {l:intlist | (Tcons[xs] <: Tcons[l]) /\<br />                                                                      (Tcons[l] <: (Tcons[xs] \/ Teq[x])) /\<br />                                                                      (Teq[x] <: Tcons[l])}
+
+where Teq denotes another (trivial) parametrized type on integers -
+<math>\Pi (a:int). \{ \upsilon :int|\upsilon = a\}</math><br />
+Let us examine the subtype relations in more detail. The first predicate defines a sbutype relation between argument list xs and newly constructed list l - <br />
+(Tcons[xs] <: Tcons[l])
+which translates to <br />
+<math>\{ \upsilon :int|\upsilon \epsilon xs\} <: \{ \upsilon :int|\upsilon \epsilon l\}</math>, and finally to<br />
+<math>\forall \upsilon:int, \upsilon \epsilon xs \Rightarrow  \upsilon \epsilon l </math><br />
+The above statement intuitively tells that every element that belongs to xs should belong to l. By writing it via relation between instantiated parametrized type, we make this intuition concrete by precisely asserting that every integer value that was used to construct xs via cons is preserved by the application of cons on xs.
+
+By following a similar logic, the second predicate in conjunction intuitively means - <br />
+<math>\forall \upsilon :int,\upsilon \epsilon l\Rightarrow (\upsilon \in l\vee \upsilon =x)</math>, an precisely means that every integer value that was used to construct l was also used to construct xs except x.
+
+The last predicate in the above conjunction could very well be written as x:Tcons[l].
+
+=== 2.3 Examples ===
+Using only notation introduced so far, we can give some interesting types to functions including the previously untypable max - 
+ insert : {l1: intlist} -> {k:int} -> {l2:intlist | (Tcons[l1] <: Tcons[l2]) /\<br />                                                                      (Tcons[l2] <: (Tcons[l1] \/ Teq[k])) /\<br />                                                                      (Teq[k] <: Tcons[l2])}
+ max : {l1 : intlist} -> {z:int | (Tcons[l1] <: Tle[z]) /\ (Teq[z] <: Tcons[l1])}
+ lookup : {t1: inttree} -> {k:int} -> {v:int | Teq(k,v) <: Tnode(t1)}
+ quicksort : {l1:intlist} -> {l2:intlist | (Tcons[l1] <: Tcons[l2]) /\ (Tcons[l2] <: Tcons[l2])}
+
+Let us run through how given type for insert can be verified. Following is the definition of list insert function (with added 'as' annotations) - 
+ fun insert (NIL as l1) k = cons(k,NIL) as l2
+    | insert (cons(h,t ) as l1) k = if (k<=h) then (cons(k,l1)) as l2) else 
+                                                let
+                                                    l' = insert k t
+                                                in
+                                                    (cons(h,l') as l2)
+                                                end
+
+In the base case,<br />
+# Tcons[l1]  <math>\equiv \bot </math> (since NIL has no internal structure wrt cons. This and type equivalence is explained in following sections)
+# cons(k,NIL) as l2 gives type of l2 as {l2:intlist | (Tcons[l2] <: Teq[k]) /\ (Teq[k] <: Tcons[l2])} (after eliminating the obvious subtyping of <math>\bot</math>) 
+# Now, it is easy to see that  <br /> {Tcons[l1] <math>\equiv  \bot </math>, (Tcons[l2] <: Teq[k]), (Teq[k] <: Tcons[l2])} <math>\vdash </math>  {(Tcons[l1] <: Tcons[l2])  /\ (Tcons[l2] <: (Tcons[l1] \/Teq[k])) /\ (Teq[k] <: Tcons[l2]) }
+
+In recursive case, 
+# From the case-match statement, we have
+## Tcons[t] <: Tcons[l1]
+## Tcons[l1] <: (Tcons[t] <math>\vee</math> Teq[h])
+## Teq[h] <: Tcons[l1]
+# Under the true branch (k<=h), we have cons(k,l1) as l2. The type of l2 directly follows the type of cons(k,l1) (It is exactly the same)
+# Under the false branch (~(k<=h)), For the type of let-bound l' we have (The following 3 relations follow from the presumptive type of insert)
+## Tcons[t] <: Tcons[l']
+## Tcons[l'] <: (Tcons[t] <math>\vee</math> Teq[k])
+## Teq[k] <: Tcons[l']
+# And, for the type of (cons(h,l') as l2) we have,
+## Tcons[l'] <: Tcons[l2]
+## Tcons[l2] <: (Tcons[l'] <math>\vee</math> Teq[h])
+## Teq[h] <: Tcons[l2]
+
+Now, from 1.2, 3.1, 4.1 and 4.3, we have '''Tcons[l1] <: Tcons[l2]''', <br/>
+From 4.2, 3.2, 1.3 and 1.1, we have '''Tcons[l2] <: (Tcons[l1] <math>\vee</math> Teq[k])''', and <br />
+From 3.3 and 4.1, we have '''Teq[k] <: Tcons[l2]''' <br />
+Conjunction of above three inferences verifies the specified type of l2.
+
+=== 2.4 Existential ===
+Consider the following function
+ silly_fun : {l1:intlist} -> {l2: intlist | (Tcons[l1] <: Tcons[l2]) /\ (Tcons[l2] <: Tcons[l1])}
+ fun silly_fun [] = []
+     | silly_fun (cons(h,t) as l) = cons((hd l1),(tl l))
+Assuming hd and tl are typed as 
+ hd: {l1:intlist} -> {z:Tcons[l1]} (* Simplified *)
+ tl: {l1:intlist} ->{l2:intlist | Tcons[l2] <: Tcons[l1]}
+It is easy to verify the first subtype relation in the conjunction. However, the second conjunction cannot be verified as types of hd and tl only assert that their return values are 1. An element in the list, and 2. A sublist of the list, respectively. This is not sufficient to verify the type of  silly_fun. 
+
+A more general version of this problem occurs when we encounter functions like these - 
+ more_silly_fun : {l1:intlist} -> {n:int} -> {l2: intlist | (Tcons[l1] <: Tcons[l2]) /\ (Tcons[l2] <: Tcons[l1])}
+ fun more_silly_fun l n = if (len(l)<n) then error() else append( prefix (l,n) , suffix(l,(len(l)-n)) )
+where prefix and suffix return first n and last len(l)-n elements in the list. Here too, it is possible to verify that no elements are added to the list, but is impossible to verify that all elements in the list are preserved without breaking the compositionality of type systems.
+
+However, interjectivity of type constructors can be exploited using existentials to partially solve the problem. Consider the intlist datatype. Destructing an intlist wrt last application of cons will yield precisely one int and one intlist. So if in the current context there is an int h and intlists t and l, and we know that there exist some t' and h' such that cons(h,t') = cons(h',t) = l, then we can soundly assert that h is that h' and t is that t'. So, if we can specify type of hd and tl as
+ hd: {l1:intlist} -> {z:Tcons[l1] | <math>\Sigma </math> t:Tcons[l1] list. l1 = cons(h,t)} 
+ tl: {l1:intlist} ->{l2:Tcons[l1] list | <math>\Sigma </math> h:Tcons[l1]. l1 = cons(h,t)}
+We can assert that (hd l)::(tl l) preserves all elements of l, and hence verify the type functions like silly_fun.
+
+As much as it looks like a 'patch', existential forms the core of the type system and is necessary to ensure that types are well-formed. Consider the following type for remove_max - 
+ remove_max : {l1:intlist} -> {l2:intlist | (Tcons[l2] <: Tcons[l1]) /\ <br />
+                                            (<math>\Sigma </math>z:Tcons[l1]. (Tcons[l1] <: Tle[z]) /\ (Tcons[l1] <: Teq[z]))}
+where Tle is a type abbreviation for indexed type - <math>\Pi (a:int).\{ \upsilon :int|\upsilon \le a\} </math><br />
+The advantage of having such a type for remove_max is that it uniquely identifies a missing element for the list, just as type for tl does (through interjectivity of cons). So, whenever we find a z' of type {z':Tcons[l1] | Tcons[l1] <: Tle[z']}, we can soundly assert that z=z'.
+
+Here is one more example where existentials in type refinement provide more usable information and where the type refinement is easily verifiable -
+ max2 : {l1:intlist} -> {l2: Tcons[l1] list | <math>\Sigma </math>z,z':Tcons[l2]. (Tcons[l1] <: Tle[z]) /\ <br />
+                                                                                 (Tcons[l1] <: (Tle[z'] \/ Teq[z])}
+ fun max2 [] = error()
+  | max2 [h] = error()
+  | max2 (h1::h2::t as l1) = let 
+                                 m1 = max(l1)
+                                 l' = remove_max(l1)
+                             in
+                                 let m2 = max(l') in m1::m2 end
+                             end
+
+If you observe the types written using existentials so far, only variables for which evidences were produced within the function abstraction were existentially bounded in the type refinement. It is only in such cases that the function serves as constructive proof for its type. Unfortunately, the language of types also allows specification of properties that are correct, but for which the function does not provide a constructive proof. Here are some examples -
+
+ remove_max : {l1:intlist} -> {l2:Tcons[l1] list | <math>\Sigma </math>z:Tcons[l2]. (Tcons[l1] <: Tge[z]) /\ (Tcons[l2] <: Tge[z])}
+ filter_evens : {l1:intlist} -> {l2: Tcons[l1] list | <math>\Sigma </math>l':Tcons[l1] list. Tcons[l1] <: Tcons[l'] \/ Todd}
+
+In both the cases, type of functions assert existence of some value without actually producing such value during the computation. Proving such properties is, in general, undecidable. We can take two approaches for such types - 
+# Fail typechecking asserting that such type is incorrect. By taking this approach, we view the function f:x->{y|<math>\Sigma </math>z.p(z)} as semantically equivalent to f:x->{(y,z).1| p(z)} 
+# Introduce certain axioms into type rules that help verify types like above to some extent. For the rest, type checking is undecidable.
+
+=== 2.5 Invariants ===
+Consider the following function that returns minimum key in a binary search tree -
+
+ fun bstmin Empty = error()
+   | bstmin (Node (Empty,(k,v),_) as t1) = k
+   | bstmin (Node (lt,_,)) as t1) = bstmin lt
+
+To specify a useful type for bstmin,
+# There has to be a notation to denote that k is a key that "belongs" to set of keys in the binary tree, and
+# The bst property of the tree should be made explicit. 
+Such invariants can be specified as a part of datatype declaration itself - 
+
+ datatype inttree = Empty | Node of {lt:inttree}*{k:int}*{v:int}*{rt:inttree} -> {t:inttree | (TNode[t] = Tkey[t]*Tvalue[t]) /\<br />
+                                                                                            (Tkey[lt] <: Tle[k]) /\<br />
+                                                                                            (Tkey[rt] <: Tge[k]) }
+The above declaration of inttree ascribes following properties to the datatype inttree - 
+# The (implicitly declared) datatype TNode is can be destructed as a product of Tkey and Tvalue types. This has following consequences - 
+## Tkey and Tvalue will be implicitly declared as <math>\Pi (a:intree).\{ \upsilon :int|\upsilon \in a\} </math>. 
+## Following subtype rules will be added - <br /><math>({ T }_{ key }[lt]<:{ T }_{ key }[t])\quad \wedge \quad ({ T }_{ key }[rt]<:{ T }_{ key }[t])\quad \wedge \quad ({ T }_{ key }[t]<:({ T }_{ key }[lt]\vee { T }_{ key }[rt]\vee { T }_{ eq }[k]))</math>
+# The explicity declared subtyping rules ascribe BST invariant to the inttree datatype. The rules intuitively mean that keys in leftree are less than or equal to k and keys in right tree are greater than or equal to k.
+
+Apart from enabling expression of more precise types, the above datatype declaration is a very concise way of expressing BST invariant, which, otherwise, should be expressed in ''measure'' specification as below -
+ fun bst t = let
+               val rec bst' t n1 n2 = fn t => 
+                                       case t of Empty => true 
+                                         | (Node(lt,(k,_),rt)) => 
+                                             ((case n1 of None => true | Some v => v<=k) and 
+                                              (case n1 of None => true | Some v => k<=v) andalso 
+                                              bst'(lt,n1,k) andalso 
+                                              bst'(rt,k,n2)
+               in
+                  bst'(t,None,None)
+               end
+Equipped by the new notation and specification of invariants, we can specify and verify the type of bstmin as 
+ bstmin : {t:inttree} -> {z:Tkey[t] | Tkey[t] <: Tge[z]}
+
+=== 2.6 Polymorphism and recursive type definitions ===
+Subtyping rules for polymorphic datatypes essentially take the same form as their monomorphic counterparts, but they also require polymorphic definition of indexed membership types. The indexed membership types are then instantiated with polymorphic type variable in subtype rules. For eg, following the polymorphic type definition of lists -
+
+ <math>\alpha</math> list = Nil | Cons of {h:<math>\alpha</math>}*{t:<math>\alpha</math> list} -> {l:<math>\alpha</math> list | 
+                                                <math>\alpha</math> Tcons[l1] <: <math>\alpha</math> Tcons[l1] <math>\wedge</math>
+                                                <math>\alpha</math> Tcons[l2] <: (<math>\alpha</math> Tcons[l1] <math>\vee</math> <math>\alpha</math> Teq[h]) <math>\wedge</math>
+                                                <math>\alpha</math> Teq[h] <: <math>\alpha</math> Tcons[l2] }
+
+The above type definition instantiated polymorphic indexed types defined as following -<br />
+<math>{ T }_{ cons }\quad :=\quad \forall \beta .\quad \Pi (a:\beta \quad list).\quad \{ \upsilon :\beta |\upsilon \epsilon a\}</math> <br />
+<math>{ T }_{ eq }\quad :=\quad \forall \beta .\quad \Pi (a:\beta ).\quad \{ \upsilon :\beta |\upsilon =a\}</math>  <br />
+
+The polymorphic equality type (<math>{ T }_{ eq }</math>)  does not mandate the type <math>\beta</math> to define equality. Referential equality is taken as standard form of equality. That is in the following example, assuming l is tree list,
+ let cons(h,t) = l in 
+   case l of x::xs => ...
+ end
+x has type Teq[h], as both x and h refer to the head of the list. <br />
+
+It looks like we have solved the problem of representing element inclusion as subtype relations in polymorphic datatype definitions using the polymorphic definition of Tcons. However, this only solves the problem when datatype definition does not instantiate any other polymorphic types. That is, consider the following definition of tree where each node can have unbounded number of children - 
+  <math>\gamma</math> tree = Empty | Node of {n:int}*{l: <math>\gamma</math> tree list} -> {t: <math>\gamma</math> tree}
+The above polymorphic recursive definition of tree uses another polymorphic datatype - list, after explicitly instantiating it with recursive type. The subtype rules between indexed types should now unfold the definition of list to relate <math>\gamma</math> trees inside the list to <math>\gamma</math> tree being defined. Following the path we took in the list example above, we define the polymorphic Tnode type as following - <br />
+<math>{ T }_{ node }\quad :=\quad \forall \beta .\quad \Pi (a:\beta \quad tree).\quad \{ \upsilon :\beta |\upsilon \epsilon a\}</math> <br />
+The above definition specifies a set of values inside a given <math>\gamma</math> tree for any <math>\gamma</math> as the definition itself is polymorphic. However, it does not allow us to reason about about <math>\gamma</math> trees inside the list as Tnode[l] is not a well-formed type. We need a Tnode type definition that is parametrized over "set of values" in <math>\gamma</math> tree list. Fortunately, we have concretized the notion of "set of values" in a polymorphic list using polymorphic Tcons type. We use this to define a type Tnode-cons as
+ <math>{ T }_{ node-cons }\quad :=\quad \forall \beta .\quad \Pi (a:\quad \beta \quad tree\quad list).\quad \Pi (b:\quad \beta \quad tree\quad Tcons[a]).\quad (\beta \quad { T }_{ node }[b])</math>
+Now that we have a type notion of set of <math>\gamma</math>values spread over <math>\gamma</math> trees in the list, the following sub-type rules can be automatically defined -<br />
+ <math>\gamma</math> Tnode-cons[l] <: <math>\gamma</math>Tnode[t] -- 1 (* well-formed since <math>\upsilon : \beta</math> in both cases *)
+ <math>\gamma</math> Tnode[t] <: (<math>\gamma</math> Tnode-cons[l] \/ Teq[n]) -- 2
+Now, when t is unfolded as Node(n,l) and l is unfolded as x::xs, we know that x:<math>\gamma</math> tree and xs: <math>\gamma</math> tree list. we therefore relate t, l, x, and xs as following -
+ <math>\gamma</math> Tnode-cons[l][x] <: <math>\gamma</math> Tnode[t] (* From 1 above *)
+but, <math>\gamma</math> Tnode-cons[l][x] is actually <math>\gamma</math> Tnode[x]. So,
+ <math>\gamma</math>Tnode[x] <: <math>\gamma</math> Tnode[t]
+<math>\gamma</math> Tcons[xs] <: <math>\gamma</math> Tcons[l]. So,
+ <math>\gamma</math> Tnode-cons[xs] <: <math>\gamma</math> Tnode-cons[l]
+But, from 1 above, it follows that
+  <math>\gamma</math> Tnode-cons[xs] <: <math>\gamma</math>Tnode[t] 
+
+The above subtyping rules intuitively mean that when Node is applied over n:<math>\gamma</math> and a <math>\gamma</math> tree list l, the resultant tree t contains every element of every tree inside l and also the element n and nothing else. <br />
+Thus, existing indexed types can be composed into richer types that are expressive enough to specify relations between set of values even in presence of polymorphic types.
+
+=== 2.7 Improved notation for existentials ===
+Consider the following type definition -
+ <math>{ T }_{ max }\quad :=\quad \Pi (l:intlist).\quad \{ z:{ T }_{ cons }[l]|({ T }_{ cons }[l]<:{ T }_{ le }[z])\} </math>
+The above type defines a singleton set of maximum element of a given list l. Using the above type, we can define a new auxiliary type that would aid us in typing remove-max
+ <math>{ T }_{ no-max }\quad :=\quad \Pi (l:intlist).\quad \Sigma (z:{ T }_{ max }[l]).\quad \{ \upsilon :intlist|({ T }_{ cons }[\upsilon ]<:{ T }_{ cons }[l])\quad \wedge \quad ({ T }_{ cons }[l]<:{ T }_{ cons }[\upsilon ]\vee { T }_{ eq }[z])\} </math>
+Using the Tno-max type, we can rewrite the type of remove-max as
+  remove_max : {l1:intlist} -> {l2:Tno-max[l1]}
+By pushing existentials from the level of sub-type refinements into type definitions,
+# We have uniform notation capable of expressing both universal and existential quantification in the type definition. 
+# Syntax for sub-type refinements now no longer include existentials, and therefore, can be dealt in simpler way.
+
+Using <math>\Sigma</math> in type definition, we can construct following types for head and tail of a list -
+ <math>{ T }_{ tail }\quad :=\quad \Pi (l:intlist).\quad \Sigma (h:{ T }_{ cons }[l]).\quad \{ \upsilon :intlist|l=cons(h,\upsilon )\} </math>
+ <math>{ T }_{ head }\quad :=\quad \Pi (l:intlist).\quad \Sigma (t:intlist|{ T }_{ cons }[t]<:{ T }_{ cons }[l]).\quad \{ \upsilon :{ T }_{ cons }[l]|l=cons(\upsilon ,t)\} </math>
+
+Typing judgement for existentially indexed-types is carried out in the way as discussed previously (section 2.4) for existentially bound sub-type refinements - To prove membership in a existentially indexed type, the type context should contain the evidence for existentially bound variable. For example, in the following definition of hd:
+
+ hd: {l:intlist} -> {z:Thead[l]}
+ fun hd [] = raise error()
+     | hd x::xs = x
+
+To prove that x has type Thead[l], we need an evidence t:intlist in the context such that l=cons(x,t). xs serves as that evidence in this example resulting in hd being type-checked.
+
+One has to note that replacing <math>\Sigma</math> with <math>\Pi</math> in the above definition of Thead invariably leads to failure in type checking. In that case, Thead[l] is 
+ <math>{ T }_{ head }[l]\quad :=\quad \Pi (t:intlist|{ T }_{ cons }[t]<:{ T }_{ cons }[l]).\quad \{ \upsilon :{ T }_{ cons }[l]|l=cons(\upsilon ,t)\} </math>
+and h:Thead[l] asserts that for any choice of intlist t constructed with elements from l, cons(h,t) =l. Our type rules prevent type checking such absurdities.
+
+== 3. Typing Judgements ==
+=== 3.1 Syntax ===
+ B ::= bool | int
+ <math>\delta</math>    ::= user defined datatypes
+ <math>{ T }_{ B }</math>    ::= B | <math>\delta</math> | <math>{ T }_{ B }*{ T }_{ B }</math> | <math>{ T }_{ B }\rightarrow { T }_{ B }</math>
+ <math>\hat { T } </math>    ::= <math>\Pi (a:{ T }_{ B }).\{ \nu :{ T }_{ B }|\nu \in a\} </math>
+ <math></math>
+ <math>{ T }_{ D }</math>    ::= <math>\{ \nu :{ T }_{ B }|\rho \} </math> | <math>\{ \nu :\hat { T } [v]|\rho \} </math> | <math>{ T }_{ D }*{ T }_{ D }</math> | <math>{ T }_{ D }\rightarrow { T }_{ D }</math> (* These are the types that variables in programs can have *)
+ <math>{ T }_{ i }</math>    ::= <math>\Pi (a:{ T }_{ B }).{ T }_{ D }</math> (* One bound variable. Conjunctions and disjunctions will construct more types. *)
+ <math>{ T }_{ ins }</math>    ::= <math>{ T }_{ i }[v]</math> | <math>\hat { T }[v]</math> (*Instantiated parametric types*)
+ <math>\rho</math>    ::= <math>Q\wedge { \rho  }_{ <: }</math>
+ <math>Q</math>    ::= true | Q<math>\wedge</math>Q | <math>\nu <v</math> | <math>\nu >v</math> | <math>\nu \le v</math> | <math>\nu \ge v</math> | <math>\nu =v</math> |  <math>\nu \neq v</math>  
+  <math>{ \rho  }_{ <: }</math>    ::= true | <math>\Sigma (\nu :{ T }_{ B }).{ \rho  }_{ <: }</math> | <math>\Sigma (\nu :\hat { T }[v]).{ \rho  }_{ <: }</math> | <math>{ T }_{ ins }<:\bigvee { { T }_{ ins } } </math> | <math>{ T }_{ ins }<:\bigwedge { { T }_{ ins } } </math> | <math>{ \rho  }_{ <: } \wedge { \rho  }_{ <: }</math>
+
+=== 3.2 Type Rules ===
+The following definitions and type abbreaviations will be handy to define type rules =
+ Base(<math>\{\nu : \tau | e\}</math>) = Base(<math>\tau</math>)
+ Base(<math>{T}_{B}</math>) = <math>{T}_{B}</math>
+ <math>\alpha {T}_{EQ}</math> = <math>\forall \alpha. \Pi (a:\alpha ). \{\nu : \alpha | \nu = a\}</math>
+
+ <math>\cfrac { \Gamma (x)=T\quad \quad \quad T::{ T }_{ B } }{ \Gamma \vdash x:{ (T }_{ B }{ T }_{ EQ }[x]) } </math> --- [T-EQ-I]
+ <math>\cfrac { \Gamma \vdash x:{ T }_{ x }\quad \quad \quad \quad \quad \Gamma ;x:{ T }_{ x }\vdash { { \rho  } }_{ <: }^{ x } }{ \Gamma \vdash \{ x:{ T }_{ x }|{ { \rho  } }_{ <: }^{ x }\}  } </math> --[T-STR-I]
+ <math>\cfrac { \Gamma \vdash \{ x:{ T }_{ x }|{ { \rho  } }_{ <: }^{ x }\} \quad  }{ \Gamma ;x:{ T }_{ x }\vdash { { \rho  } }_{ <: }^{ x } } </math> --- [T-STR-E]
+ <math>\cfrac { \Gamma ;x:\hat { T }_{ x }\vdash e:\hat T\quad \quad \quad \quad \Gamma \vdash x:\hat { T }_{ x }\rightarrow \hat T }{ \Gamma \vdash \lambda x.e:(\{ x:\hat { T }_{ x }\} \rightarrow \hat T) } </math> --- [T-FUN]
+  <math>\cfrac { \Gamma \vdash e1:\{ { x:\hat { T }  }_{ x }\} \rightarrow { \hat { T }  }_{ y })\quad \quad \quad \quad \Gamma \vdash e2:\hat { T } _{ x }\quad  }{ \Gamma \vdash e1e2:[e2/x]{ \hat { T }  }_{ y } } </math> --- [T-APP] (* <math>\alpha</math> renaming inside type implictly assumed *)
+  <math>\cfrac { \Gamma \vdash e1:bool\quad \quad \quad \quad \Gamma ;e1\vdash e2:\hat { T } \quad \quad \quad \Gamma ;e1\vdash e3:\hat { T }  }{ \Gamma \vdash if\quad e1\quad then\quad e2\quad else\quad e3:{ \hat { T }  } } </math> --- [T-IF]
+ 
+ <math>\cfrac { \Gamma { ;x:T }_{ x }\vdash e:\{ v:{ T }_{ v }|{ \rho  }_{ <: }^{ v }\}  }{ \Gamma \vdash e:\{ v:{ T }_{ v }|{ \Sigma x:{ T }_{ x }.\rho  }_{ <: }^{ v }\}  } </math> ---[T-EX-I] (* Note: Tx doesn't refer v *)
+ TODO - [T-EX-Elim] rule wiki syntax error
+
+ <math>\cfrac { \Gamma \vdash x:{ \{ v:T }_{ v }|{ { \rho  } }1_{ <: }^{ v }\} \quad \quad \quad \quad \quad \Gamma \vdash x:{ \{ v:T }_{ v }|{ { \rho  } }2_{ <: }^{ v }\}  }{ \Gamma \vdash x:{ \{ v:T }_{ v }|{ { \rho  } }1_{ <: }^{ v }\wedge { { \rho  } }2_{ <: }^{ v }\}  } </math> --- [T-STR-AND]
+ 
+ [SUBTYPING]
+ <math>\cfrac { \Gamma \vdash { T }_{ x }<:{ T }_{ y }\quad \quad WF(\Gamma ;x:{ T }_{ x },{ \rho  }_{ <: }^{ x })\quad \quad \quad \Gamma ;x:{ T }_{ x };{ \rho  }_{ <: }^{ x };y:{ T }_{ y }\vdash { \rho  }_{ <: }^{ y } }{ \Gamma \vdash \{ x:{ T }_{ x }|{ \rho  }_{ <: }^{ x }\} \quad <:\quad \{ y:{ T }_{ y }|{ \rho  }_{ <: }^{ y }\}  } </math> --- [T-SUB-STR]
+<math></math>
+ <math>\cfrac { \Gamma \vdash { T }_{ x }<:{ T }_{ y }\quad \quad \quad \Gamma ;x:{ T }_{ x };y:{ T }_{ y }\vdash \{ v1:T1|{ \rho  }_{ <: }^{ v1 }\} \quad <:\quad \{ v2:T2|{ \rho  }_{ <: }^{ v2 }\} \quad  }{ \Gamma \vdash \{ v1:T1|\Sigma x:{ T }_{ x }.{ \rho  }_{ <: }^{ v1 }\} \quad <:\quad \{ v2:T2|\Sigma y:{ T }_{ y }.{ \rho  }_{ <: }^{ v2 }\}  } </math> --- [T-SUB-ESTR]
+ <math>\cfrac { \Gamma \vdash T<:T1\quad \quad \quad \quad \Gamma \vdash T<:T2 }{ \Gamma \vdash T<:(T1\wedge T2) } </math> --- [T-SUB-AND]
+ <math>\cfrac { \Gamma \vdash T<:T1\quad \quad \quad \quad \Gamma \vdash T2 }{ \Gamma \vdash T<:(T1\vee T2) } </math> --- [T-SUB-OR]
+ <math>\cfrac { [[\Gamma \quad \wedge \quad e1]]\quad \Rightarrow \quad [[e2]] }{ \Gamma \vdash \{ \upsilon :{ T }_{ \upsilon  }|e1\} \quad <:\quad \{ \upsilon :{ T }_{ \upsilon  }|e2\}  } </math> --- [T-SUB-DEP]
+
+== 4. Exploiting Type Information ==
+=== 4.1 Example 1===
+Consider the type of max function on lists -
+ max : {l : intlist} -> {z:Tcons[l] | (Tcons[l] <: Tle[z])}
+Now assume that we have z1 and z2 for l such that
+ z1,z2:Tcons[l], Tcons[l] <: Tle[z1] and Tcons[l] <: Tle[z2]
+which means that we have two integers z1 and z2 and an int set S such that <math>z1,z2 \in S</math> and <math>\forall x\in S, \quad x\le z1 and x \le z2</math>. Given such assertion, a decision procedure with theory of sets would validate that z1=z2. Consequently, we can assert that for every intlist l, there is a unique int z with the above type.
+
+Now, consider the type of insert -
+ insert : {l1: intlist} -> {k:int} -> {l2:intlist | (Tcons[l1] <: Tcons[l2]) /\
+                                                                   (Tcons[l2] <: (Tcons[l1] \/ Teq[k])) /\
+                                                                   (Teq[k] <: Tcons[l2])}
+We would like to know if we can replace 
+ let val l2 = insert(l1,k)) in max(l2) 
+with max(l1)||insert(l1,k). Given that max has uniqueness property, we would like to know if there is z such that {z:Tcons[l1] | Tcons[l1]<:Tle[z]} => {z:Tcons[l2] | Tcons[l2]<:Tle[z]}.<br />
+ Since Tcons[l1] <: Tcons[l2], z:Tcons[l1] => z:Tcons[l2]. <br />
+ Since Tcons[l2] <: (Tcons[l1] \/ Teq[k]) and Tcons[l1] <: Tle[z], we have Tcons[l2] <: (Tle[z] \/ Teq[k]). <br />
+Tcons[l2] <: Tle[z] follows from above result, if Teq[k] <: Tle[z], that is, when k<math>\le</math>z. <br />
+So, when k<math>\le</math>z, we can remove the dependency between max and insert. However, we do not know z till we run max on l1. Hence, the check k<math>\le</math>z acts as a simple verification check to see if the performed transformation was sound.
+
+=== 4.2 Example 2 ===
+Consider the type of lookup function of trees -
+ lookup : {t: inttree} -> {k:int} -> {v:int | Teq(k,v) <: Tnode(t)}
+and consider v1 and v2 such that Teq(k,v1) <: Tnode(t) and Teq(k,v2) <: Tnode(t). That means, we have an int*int set S and two pairs p1=(k,v1) and p2=(k,v2) such that p1 and p2 <math>\in</math> S. We would like to see if v1=v2 (Uniqueness). <br />
+From the type definition and BST invariant specified in intree definition -
+ datatype inttree = Empty | Node of {lt:inttree}*{k:int}*{v:int}*{rt:inttree} -> {t:inttree | (TNode[t] = Tkey[t]*Tvalue[t]) /\
+                                                                                                         (Tkey[lt] <: Tl[k]) /\
+                                                                                                         (Tkey[rt] <: Tg[k]) }
+We know that  <br />
+# S = {(k',v')}  U S1 U S2 for some k',v',S1 and S2, and
+# <math>\forall (k1,v1) \in S1, (k2,v2) in S2, k1<k'<k2</math>
+Instantiating the universal quantifier in 2, we get three (unique) cases -
+# S= {(k,v1)} U S1 U S2 and (k,v2)<math>\in</math>S1 [UNSAT as this requires k<k]
+# (k,v1)<math>\in</math>S1 and (k,v1)<math>\in</math>S1  [UNSAT as this requires k<k]
+# (k,v1),(k,v2)<math>\in</math>S1  or (k,v1),(k,v2)<math>\in</math>S2. [recursive case. v1=v2 by IH]
+Hence we have uniquess property for lookup, which means that for a given intree t and an int k, there is unique v with the type Teq(k,v) <: Tnode(t). <br />
+Consider the type of remove function in trees -
+ remove : {t1: inttree} -> {k1:int} -> {t2:intlist | <math>\Sigma</math>v:int.(Tnode[t2] <: Tnode[t1]) /\
+                                                                           (Tnode[t1] <: (Tnode[t2] \/ Teq[(k1,v)])) /\
+                                                                           (Teq[(k1,v)] <: Tnode[t1])}
+We would like to know if 
+ let val t2 = insert(t1,k1) in lookup(t2,k2) end
+can be transformed to insert(k1,t1) || lookup(k2,t1). 
+Since (k2,v):Tnode[t1] and (Tnode[t1]<:Tnode[t2] \/ Teq[(k1,v0)]), we have (k2,v):(Tnode[t2] \/ Teq[(k1,v0)])) <br />
+Now, (k2,v) : (Tnode[t2]) if (k2,v):Teq(k1,v0) is UNSAT. This happens if (k1<math>\neq</math>k2) or (v<math>\neq</math>v0). But v0 is existentially bound in type of remove. Easiest check to verify soundness is, therefore, k1<math>\neq</math>k2
+
